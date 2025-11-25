@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fusion-Fit: Premium Protocol Interface</title>
+    <!-- Load Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Load Inter Font */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #020617; /* slate-950 */
+            color: #e2e8f0; /* slate-200 */
+            /* Subtle background texture for aesthetic */
+            background-image: radial-gradient(circle, #0e1217 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        /* Custom scrollbar for aesthetic */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b; /* slate-800 */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #f97316; /* orange-600 */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #f59e0b; /* amber-500 */
+        }
+
+        .animate-fadeIn {
+            animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <div id="app-root" class="min-h-screen">
+        <div class="flex items-center justify-center h-screen bg-slate-950">
+            <div class="text-white flex flex-col items-center">
+                <svg class="animate-spin h-8 w-8 text-orange-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <p class="text-lg text-slate-400 font-medium">Initializing Protocol...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables available inside this module script
+        let app;
+        let auth;
+        let db;
+        let userId = null;
+        let isAuthReady = false;
+        let activeTab = 'dashboard';
+        let mobileMenuOpen = false;
+
+        // Global state object mirroring the React component state
+        let userState = {
+            name: '',
+            height: '',
+            weight: '',
+            age: '',
+            goal: 'maintenance',
+            goalDurationMonths: 0,
+            targetWeightChangeKg: 0,
+            streakDays: 0,
+            lastCompletionDate: null, 
+            weeklyCompletion: {},
+            dailyWaterIntake: 0,
+            dailyWaterDate: null,
+        };
+
+        // --- Global Constants and Utilities ---
+        const FIREBASE_CONFIG = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-fusion-app';
+        const INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const WATER_GOAL_ML = 3000;
+        const INCREMENT_ML = 1000;
+        
+        const getTodayDateString = () => new Date().toISOString().slice(0, 10);
+        
+        const dateDifferenceInDays = (date1, date2) => {
+            if (!date1 || !date2) return -1;
+            const d1 = new Date(date1);
+            const d2 = new Date(date2);
+            d1.setHours(0, 0, 0, 0);
+            d2.setHours(0, 0, 0, 0);
+
+            const diffTime = d2.getTime() - d1.getTime();
+            return Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        };
+
+        const calculateBMI = (heightCm, weightKg) => {
+            const h = parseFloat(heightCm);
+            const w = parseFloat(weightKg);
+
+            if (isNaN(h) || isNaN(w) || h <= 0) return { bmi: 'N/A', status: 'Incomplete', color: 'text-slate-500' };
+            const heightM = h / 100;
+            const bmiValue = w / (heightM * heightM);
+            const roundedBmi = bmiValue.toFixed(1);
+
+            let status = 'Healthy';
+            let color = 'text-lime-400';
+
+            if (bmiValue < 18.5) {
+                status = 'Underweight';
+                color = 'text-sky-400';
+            } else if (bmiValue >= 25 && bmiValue < 30) {
+                status = 'Overweight';
+                color = 'text-amber-400';
+            } else if (bmiValue >= 30) {
+                status = 'Obese';
+                color = 'text-red-500';
+            }
+
+            return { bmi: roundedBmi, status, color };
+        };
+        
+        const BASE_PLANS = {
+            maintenance: {
+                title: "Adaptive Fitness Protocol (Level 1)",
+                description: "Balanced routine for overall health, functional strength, and consistency.",
+                schedule: [
+                    { day: "MON", focus: "Full Body Strength", exercises: ["Squats 3x10", "Bench Press 3x10", "Row 3x10", "Plank 3x60s"] },
+                    { day: "TUE", focus: "Cardio & Core", exercises: ["30 min Run/Cycle", "Crunches 3x20", "Leg Raises 3x15"] },
+                    { day: "WED", focus: "Rest/Active Recovery", exercises: ["Yoga or Light Walk (30 min)"] },
+                    { day: "THU", focus: "Upper Body Hypertrophy", exercises: ["Overhead Press 3x10", "Pull-ups 3x8", "Bicep Curls 3x12"] },
+                    { day: "FRI", focus: "Lower Body & HIIT", exercises: ["Deadlifts 3x8", "Lunges 3x10 (each)", "HIIT Sprints (15 min)"] },
+                    { day: "SAT", focus: "Mobility & Skill", exercises: ["Stretching Routine", "Practice a new skill (e.g., Handstands)"] },
+                    { day: "SUN", focus: "Rest/Recovery", exercises: ["Full Day Off", "Meal Prep"] },
+                ]
+            },
+            loss: {
+                title: "Metabolic Acceleration Protocol (Level 1)",
+                description: "High-volume, high-intensity routine focused on fat burning and endurance.",
+                schedule: [
+                    { day: "MON", focus: "Full Body Circuit A", exercises: ["Goblet Squats 3x15", "Push-ups 3xMax", "Kettlebell Swings 3x15", "Burpees 3x10"] },
+                    { day: "TUE", focus: "LISS Cardio", exercises: ["60 min Brisk Walk/Slow Jog (Zone 2)"] },
+                    { day: "WED", focus: "Upper Body & Core", exercises: ["Incline Dumbbell Press 3x12", "Lat Pulldowns 3x12", "Russian Twists 3x20"] },
+                    { day: "THU", focus: "Rest/Active Recovery", exercises: ["Foam Rolling & Stretching"] },
+                    { day: "FRI", focus: "Full Body Circuit B", exercises: ["Step-ups 3x12 (each)", "Overhead Triceps Ext 3x12", "Cali Row 3x12", "Mountain Climbers 3x60s"] },
+                    { day: "SAT", focus: "HIIT Session", exercises: ["Tabata: 20s work / 10s rest (4 rounds of 4 exercises)"] },
+                    { day: "SUN", focus: "Rest/Recovery", exercises: ["Full Day Off", "Deep Tissue Massage"] },
+                ]
+            },
+            gain: {
+                title: "Hypertrophy & Strength Protocol (Level 1)",
+                description: "Lower rep range, higher weight routine for muscle growth and power.",
+                schedule: [
+                    { day: "MON", focus: "PUSH: Chest, Shoulders, Triceps", exercises: ["Barbell Bench 3x6-8", "Shoulder Press 3x8", "Lateral Raises 3x12", "Triceps Pushdown 3x10"] },
+                    { day: "TUE", focus: "PULL: Back, Biceps, Core", exercises: ["Barbell Rows 3x6-8", "Deadlift (Light) 3x8", "Hammer Curls 3x10", "Cable Crunches 3x15"] },
+                    { day: "WED", focus: "Rest/Light Cardio", exercises: ["30 min Light Walk or Cycle"] },
+                    { day: "THU", focus: "LEGS: Quads, Hamstrings, Calves", exercises: ["Barbell Squats 3x6-8", "Leg Press 3x10", "Hamstring Curls 3x10", "Calf Raises 3x15"] },
+                    { day: "FRI", focus: "Upper Body Volume", exercises: ["Dumbbell Bench 4x10", "Seated Cable Row 4x10", "Face Pulls 4x15", "Bicep Curls 4x12"] },
+                    { day: "SAT", focus: "Active Recovery", exercises: ["Mobility drills and light stretching."] },
+                    { day: "SUN", focus: "Rest/Recovery", exercises: ["Full Day Off", "Refeed Day"] },
+                ]
+            }
+        };
+
+        const WORKOUT_PLANS = {
+            maintenance: { title: "General Fitness Protocol" },
+            loss: { title: "Metabolic Acceleration" },
+            gain: { title: "Hypertrophy & Strength" }
+        };
+
+        const getDynamicSchedule = (goal, streakDays) => {
+            const basePlan = BASE_PLANS[goal] || BASE_PLANS['maintenance'];
+            const progressionLevel = Math.floor(streakDays / 14); 
+            const currentWeek = `WEEK ${(Math.floor(streakDays / 7) % 4) + 1}`;
+            
+            let dynamicSchedule = JSON.parse(JSON.stringify(basePlan.schedule));
+            
+            if (progressionLevel > 0) {
+                dynamicSchedule = dynamicSchedule.map(day => {
+                    if (!day.focus.toLowerCase().includes("rest")) {
+                        let newExercises = day.exercises.map(ex => {
+                            if (ex.includes('x')) {
+                                let [movement, setsReps] = ex.split(' ');
+                                if (setsReps) {
+                                    let [sets, reps] = setsReps.split('x').map(Number);
+                                    
+                                    const newSets = sets + Math.floor(progressionLevel / 2);
+                                    const newReps = reps + (progressionLevel % 2);
+                                    
+                                    return `${movement} ${newSets}x${newReps}`;
+                                }
+                            }
+                            return ex;
+                        });
+                        return { ...day, exercises: newExercises };
+                    }
+                    return day;
+                });
+            }
+
+            return {
+                ...basePlan,
+                schedule: dynamicSchedule,
+                progressionLevel: progressionLevel,
+                currentWeek: currentWeek
+            };
+        };
+
+        const getCoachResponse = (query, goal) => {
+            const lowerQuery = query.toLowerCase();
+
+            if (lowerQuery.includes('pace') || lowerQuery.includes('track')) {
+                let response;
+                if (goal === 'loss') {
+                    response = "STATUS: MONITORING. For **Weight Loss**, the target pace is typically $0.5$ - $1.0$ kg/week. Ensure your calorie deficit is consistent and prioritize protein intake to preserve muscle mass. Review your goal in the Profile tab.";
+                } else if (goal === 'gain') {
+                    response = "STATUS: OPTIMAL. For **Muscle Gain**, the recommended pace is $0.2$ - $0.5$ kg/week. Focus on progressive overload in your workouts and consume a surplus of $250$ - $500$ kcal daily.";
+                } else {
+                    response = "STATUS: MAINTENANCE. Your goal is general fitness. Focus on consistency, completing $4$ - $5$ workouts per week, and hitting your hydration goals. Keep up the streak!";
+                }
+                return `// PROTOCOL REX // ${response}`;
+            }
+
+            if (lowerQuery.includes('macro')) {
+                let response;
+                if (goal === 'loss') {
+                    response = "MACRO INSTRUCTION: Prioritize protein for satiety and muscle preservation. Aim for a split near **$40\%$ Protein / $30\%$ Fat / $30\%$ Carbs**. Adjust fat and carbs based on energy levels.";
+                } else if (goal === 'gain') {
+                    response = "MACRO INSTRUCTION: To fuel muscle growth, increase both protein and carbohydrates. Target a split of **$35\%$ Protein / $45\%$ Carbs / $20\%$ Fat**. Consume carbs pre and post-workout.";
+                } else {
+                    response = "MACRO INSTRUCTION: For general fitness, a balanced approach is best. Aim for **$30\%$ Protein / $40\%$ Carbs / $30\%$ Fat**. Adjust slightly based on your daily activity.";
+                }
+                return "// NUTRITION MATRIX // " + response;
+            }
+
+            if (lowerQuery.includes('sleep') || lowerQuery.includes('recovery')) {
+                return "// RECOVERY PROTOCOL // Initiate Sleep Hygiene Check: 1) **Maintain a consistent sleep schedule**. 2) **Dim ambient light** $60$ minutes before bed. 3) **Ensure your room temperature is cool**. Prioritize $7$ - $9$ hours.";
+            }
+
+            if (lowerQuery.includes('today')) {
+                return "// PROTOCOL READY // Consult the 'Plan' tab for your **complete scheduled workout**. Ensure you hit your $3000$ml hydration target and maintain your streak. Execute with maximum efficiency.";
+            }
+
+            return "// DATA UNKNOWN // Query refined. Coach Rex needs more specific training or nutrition data. Try a Quick-Ask button or ask about a specific exercise or food.";
+        };
+
+        // --- Icon SVGs (Inline) ---
+        const icons = {
+            Home: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+            User: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+            Dumbbell: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.4 14.4L9.6 9.6"/><path d="M18 10V6"/><path d="M14 6h4"/><path d="M10 18v-4"/><path d="M6 14h4"/><path d="M21 3l-3 3"/><path d="M3 21l3-3"/><path d="M15 9l-3 3"/><path d="M9 15l-3 3"/></svg>`,
+            MessageSquare: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+            Menu: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
+            X: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+            Activity: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`,
+            Award: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.4 3.4L21 6.8l-4.7 4.7L18.4 17l-6.4-3.4-6.4 3.4L7.7 11.5 3 6.8l5.6-1.4z"/></svg>`,
+            TrendingUp: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>`,
+            Target: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,
+            Droplet: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.32 0z"/></svg>`,
+            Check: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+            CheckCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14 9 11"/></svg>`,
+            Utensils: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v7c0 1.1 0.9 2 2 2h3c1.1 0 2-0.9 2-2V2"/><path d="M7 11v11"/><path d="M15 2v7c0 1.1.9 2 2 2h3c1.1 0 2-.9 2-2V2"/><path d="M19 11v11"/></svg>`,
+            Clock: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
+            Send: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`,
+            Plus: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+        };
+
+        // --- Core UI Components (HTML Templates) ---
+        
+        const NavButton = (id, label, iconKey) => `
+            <button
+                onclick="window.setActiveTab('${id}')"
+                class="flex items-center gap-3 px-4 py-3 rounded-full transition-all duration-300 font-semibold text-sm 
+                ${activeTab === id
+                    ? 'bg-orange-600 text-slate-950 shadow-xl shadow-orange-500/30 ring-2 ring-orange-400/50'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-orange-400'
+                }"
+            >
+                <span class="w-5 h-5">${icons[iconKey]}</span>
+                <span class="hidden lg:inline">${label}</span>
+            </button>
+        `;
+
+        const Navigation = () => {
+            const navItems = [
+                { id: 'dashboard', label: 'Dashboard', icon: 'Home' },
+                { id: 'plan', label: 'Workout Plan', icon: 'Dumbbell' },
+                { id: 'profile', label: 'Profile', icon: 'User' },
+                { id: 'coach', label: 'Coach Rex', icon: 'MessageSquare' },
+            ];
+
+            const navButtons = navItems.map(item => NavButton(item.id, item.label, item.icon)).join('');
+            const mobileButtons = navItems.map(item => `
+                <button
+                    onclick="window.setActiveTab('${item.id}'); window.setMobileMenu(false);"
+                    class="flex items-center gap-3 px-4 py-3 rounded-full transition-all duration-300 font-semibold text-sm w-full
+                    ${activeTab === item.id
+                        ? 'bg-orange-600 text-slate-950 shadow-xl shadow-orange-500/30 ring-2 ring-orange-400/50'
+                        : 'text-slate-400 hover:bg-slate-800 hover:text-orange-400'
+                    }"
+                >
+                    <span class="w-5 h-5">${icons[item.icon]}</span>
+                    <span>${item.label}</span>
+                </button>
+            `).join('');
+
+            return `
+                <header class="bg-slate-950/90 backdrop-blur-xl border-b border-slate-800 shadow-2xl sticky top-0 z-20">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div class="flex justify-between items-center h-24">
+                            <div class="flex items-center">
+                                <h1 class="text-3xl font-extrabold text-white tracking-tighter flex items-center">
+                                    <span class="w-9 h-9 mr-3 text-orange-500">${icons.Activity}</span>
+                                    <span class="text-orange-500">FUSION</span><span class='text-slate-300'>-FIT</span>
+                                </h1>
+                            </div>
+
+                            <!-- Desktop Navigation -->
+                            <nav class="hidden sm:flex space-x-3">
+                                ${navButtons}
+                            </nav>
+
+                            <!-- Mobile Menu Button -->
+                            <button
+                                class="sm:hidden text-orange-500 p-3 rounded-xl hover:bg-slate-800 transition"
+                                onclick="window.setMobileMenu(!mobileMenuOpen)"
+                            >
+                                <span class="w-7 h-7">${mobileMenuOpen ? icons.X : icons.Menu}</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Mobile Menu Dropdown -->
+                    ${mobileMenuOpen ? `
+                        <div class="sm:hidden px-4 pt-2 pb-4 space-y-2 bg-slate-950/95 absolute w-full shadow-2xl">
+                            ${mobileButtons}
+                        </div>
+                    ` : ''}
+                </header>
+            `;
+        };
+
+        const GlassCard = (content, className = '', highlightColor = 'border-orange-500/30') => `
+            <div class="bg-slate-900/80 backdrop-blur-xl rounded-[20px] p-8 border ${highlightColor} shadow-2xl shadow-slate-950/70 transition-all duration-500 ${className}">
+                ${content}
+            </div>
+        `;
+
+        const IconButton = (content, onClickHandler, color = 'orange', disabled = false, type = 'button') => {
+            const baseClasses = "flex items-center justify-center px-6 py-3 rounded-xl font-bold transition-all duration-300 transform hover:scale-[1.03] disabled:opacity-50 uppercase tracking-widest shadow-lg focus:outline-none focus:ring-4 ring-offset-2 ring-offset-slate-950";
+            let colorClasses;
+            let currentBaseClasses = baseClasses;
+
+            if (color === 'orange') {
+                colorClasses = 'bg-orange-600 hover:bg-orange-500 text-slate-950 shadow-orange-500/50 ring-orange-500/50';
+            } else if (color === 'lime') {
+                colorClasses = 'bg-lime-600 hover:bg-lime-500 text-slate-950 shadow-lime-500/50 ring-lime-500/50';
+            } else if (color === 'purple') {
+                colorClasses = 'bg-purple-600 hover:bg-purple-500 text-white shadow-purple-500/50 ring-purple-500/50';
+            } else if (color === 'small-lime') {
+                currentBaseClasses = "flex items-center justify-center px-4 py-2 rounded-lg font-bold transition-all duration-200 transform hover:scale-[1.05] disabled:opacity-50 uppercase tracking-wide shadow-md focus:outline-none focus:ring-2 ring-offset-1 ring-offset-slate-950 text-xs";
+                colorClasses = 'bg-lime-600 hover:bg-lime-500 text-slate-950 shadow-lime-500/30 ring-lime-500/50';
+            }
+
+            return `
+                <button
+                    type="${type}"
+                    onclick="${onClickHandler}"
+                    ${disabled ? 'disabled' : ''}
+                    class="${currentBaseClasses} ${colorClasses}"
+                >
+                    ${content}
+                </button>
+            `;
+        };
+        
+        const CircleIconButton = (iconSvg, onClickHandler, disabled = false) => {
+            const sizeClasses = 'w-14 h-14 text-lg';
+            const colorClasses = 'bg-sky-600 hover:bg-sky-500 text-slate-950 shadow-2xl shadow-sky-500/50 ring-4 ring-sky-500/50';
+
+            const baseClasses = `flex items-center justify-center rounded-full font-extrabold transition-all duration-300 transform hover:scale-[1.1] disabled:opacity-50 focus:outline-none ring-offset-2 ring-offset-slate-950 ${sizeClasses}`;
+
+            return `
+                <button
+                    onclick="${onClickHandler}"
+                    ${disabled ? 'disabled' : ''}
+                    class="${baseClasses} ${colorClasses}"
+                >
+                    <span class="w-6 h-6">${iconSvg}</span>
+                </button>
+            `;
+        };
+        
+        // --- Page Renderers ---
+
+        const renderDashboard = () => {
+            const user = userState;
+            const { bmi, status: bmiStatus, color: bmiColor } = calculateBMI(user.height, user.weight);
+            
+            const completedSegments = Math.floor(user.dailyWaterIntake / INCREMENT_ML);
+            const streakMessage = user.streakDays > 0 
+                ? `Maintain your consistency. Streak at ${user.streakDays} days.` 
+                : "Initialize your first data cycle by completing a workout.";
+            
+            const DataPill = (label, value, iconKey, colorClass, highlight, bmiStatus) => `
+                <div class="p-5 rounded-2xl border-b-4 border-l-2 ${highlight} bg-slate-800/80 shadow-inner shadow-slate-950/50">
+                    <div class="flex items-center justify-between mb-1">
+                        <p class="text-xs text-slate-400 uppercase font-medium tracking-widest">${label}</p>
+                        <span class="w-5 h-5 ${colorClass}">${icons[iconKey]}</span>
+                    </div>
+                    <span class="text-4xl font-extrabold mt-1 block ${colorClass}">${value}</span>
+                    ${bmiStatus ? `<span class="text-sm mt-1 block ${bmiColor} font-semibold">${bmiStatus}</span>` : ''}
+                </div>
+            `;
+            
+            const SegmentedProgressBar = (segments) => {
+                let segmentsHtml = '';
+                for (let i = 1; i <= 3; i++) {
+                    const isFilled = i <= segments;
+                    segmentsHtml += `
+                        <div
+                            class="flex-1 h-5 rounded-lg transition-all duration-700 shadow-inner border border-slate-600 ${
+                                isFilled 
+                                    ? 'bg-sky-500 shadow-sky-950' 
+                                    : 'bg-slate-700 shadow-slate-950/50'
+                            }"
+                        ></div>
+                    `;
+                }
+                return `<div class="flex space-x-2 w-full">${segmentsHtml}</div>`;
+            };
+
+            const content = `
+                <div class="space-y-12 animate-fadeIn">
+                    <!-- Hero Section -->
+                    ${GlassCard(`
+                        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center">
+                            <div>
+                                <h2 class="text-4xl sm:text-5xl font-extrabold text-white mb-2">
+                                    PROTOCOL ONLINE, <span class="text-orange-500">${user.name || 'Athlete'}</span>
+                                </h2>
+                                <p class="text-lg text-slate-300 font-light mb-8">
+                                    ${streakMessage} <span class="text-lime-400 ml-1 font-mono tracking-wider">[${WORKOUT_PLANS[user.goal]?.title || 'N/A'}]</span>
+                                </p>
+                            </div>
+                            
+                            ${IconButton(`
+                                <span class="w-5 h-5 mr-2">${icons.Dumbbell}</span> EXECUTE WORKOUT
+                            `, `window.setActiveTab('plan')`, 'orange')}
+                        </div>
+                    `, '!p-12 border-b-4 border-r-2 border-orange-500/70')}
+
+                    <!-- Metrics Grid -->
+                    <div class="grid grid-cols-2 gap-6">
+                        ${DataPill("Active Streak", user.streakDays, "Award", "text-orange-400", "border-orange-500/50")}
+                        ${DataPill("Current Mass", `${user.weight || 'N/A'} kg`, "TrendingUp", "text-sky-400", "border-sky-500/50")}
+                        ${DataPill("Primary Goal", WORKOUT_PLANS[user.goal]?.title.split(' ')[0] || 'N/A', "Target", "text-purple-400", "border-purple-500/50")}
+                        ${DataPill("BMI Index", bmi, "Activity", bmiColor, "border-slate-500/50", bmiStatus)}
+                    </div>
+                    
+                    <!-- Action Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <!-- Hydration Card - Redesigned with 3-segment bar -->
+                        ${GlassCard(`
+                            <div>
+                                <h3 class="text-3xl font-extrabold text-white mb-2 uppercase tracking-wider">Hydration Matrix</h3>
+                                <p class="text-sm text-slate-400 mb-6">Target: ${WATER_GOAL_ML} ML (3 x ${INCREMENT_ML}ML Segments)</p>
+                                
+                                <div class="flex items-center justify-between mb-6">
+                                    <p class="text-5xl font-extrabold text-sky-300 font-mono">${user.dailyWaterIntake} <span class="text-lg text-slate-400">ML</span></p>
+                                    
+                                    ${CircleIconButton(
+                                        icons.Droplet, 
+                                        'window.handleWaterIncrement()', 
+                                        completedSegments >= 3
+                                    )}
+                                </div>
+                            </div>
+                            
+                            <!-- Segmented Progress Bar -->
+                            ${SegmentedProgressBar(completedSegments)}
+                            
+                            <!-- Status Message -->
+                            <p class="text-sm font-semibold uppercase tracking-widest mt-6 ${completedSegments >= 3 ? 'text-lime-400' : 'text-sky-400'}">
+                                ${completedSegments >= 3 ? 'Goal Achieved' : `Log ${INCREMENT_ML} ML Increment (${completedSegments}/3)`}
+                            </p>
+                        `, 'flex flex-col justify-between', 'border-sky-500/50')}
+
+                        <!-- AI Assist/Coach Card -->
+                        ${GlassCard(`
+                            <div>
+                                <span class="w-9 h-9 text-purple-400 mb-4 inline-block">${icons.MessageSquare}</span>
+                                <h3 class="text-3xl font-extrabold text-white mb-2 uppercase tracking-wider">Coach Rex AI</h3>
+                                <p class="text-purple-300 mb-6">Access real-time protocol adjustments and personalized intelligence.</p>
+                            </div>
+                            ${IconButton(`
+                                <span class="w-5 h-5 mr-2">${icons.MessageSquare}</span> ACTIVATE ASSISTANT
+                            `, `window.setActiveTab('coach')`, 'purple')}
+                        `, 'flex flex-col justify-between', 'border-purple-500/50')}
+                    </div>
+                </div>
+            `;
+            return content;
+        };
+
+        const renderProfile = () => {
+            const user = userState;
+            const profileGoal = user.goal || 'maintenance';
+
+            const InputField = (label, id, value, type = 'text', unit = '') => `
+                <div class="flex flex-col space-y-2">
+                    <label for="${id}" class="text-xs font-bold text-slate-400 uppercase tracking-widest">${label}</label>
+                    <div class="flex items-center bg-slate-800/70 rounded-xl border border-slate-700 focus-within:ring-2 focus-within:ring-orange-500 transition-all shadow-inner shadow-slate-950/50">
+                        <input
+                            type="${type}"
+                            id="${id}"
+                            value="${value || ''}"
+                            class="flex-1 bg-transparent p-3 text-white focus:outline-none placeholder-slate-600"
+                            placeholder="Enter ${label.toLowerCase()}"
+                            ${type === 'number' ? 'step="0.1"' : ''}
+                        />
+                        ${unit ? `<span class="text-slate-400 pr-4 font-mono">${unit}</span>` : ''}
+                    </div>
+                </div>
+            `;
+
+            const GoalSelector = (currentGoal) => `
+                <div class="flex flex-col space-y-3">
+                    <label class="text-sm font-bold text-slate-300 uppercase tracking-widest border-l-4 border-orange-500 pl-3">Primary Goal Protocol</label>
+                    <div class="grid grid-cols-3 gap-4">
+                        ${['loss', 'maintenance', 'gain'].map(g => `
+                            <button
+                                type="button"
+                                onclick="window.setGoal('${g}')"
+                                class="p-4 rounded-xl font-bold uppercase transition-all duration-200 text-sm shadow-lg ${
+                                    currentGoal === g
+                                        ? 'bg-orange-600 text-slate-950 ring-2 ring-orange-500/50 shadow-orange-500/50'
+                                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700/80 border border-slate-700'
+                                }"
+                            >
+                                ${g.toUpperCase()}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+
+            let saveMessageHtml = '';
+            const messageElement = document.getElementById('profile-save-message');
+            if (messageElement) {
+                const message = messageElement.dataset.message;
+                const isError = message.includes('ERROR');
+                if(message) {
+                     saveMessageHtml = `<p class="font-bold mt-4 text-sm ${isError ? 'text-red-400' : 'text-lime-400'}">${message}</p>`;
+                }
+            }
+            
+            return GlassCard(`
+                <h2 class="text-3xl font-extrabold text-white mb-8 uppercase tracking-wider border-b border-slate-700 pb-4 flex items-center gap-3">
+                    <span class="w-8 h-8 text-orange-500">${icons.User}</span>
+                    Athlete Profile Calibration
+                </h2>
+                
+                <div class="text-sm text-slate-400 mb-8 font-mono break-all p-4 bg-slate-800 rounded-lg border border-slate-700">
+                    <span class="text-xs text-orange-400 block mb-1 uppercase tracking-widest">User Identifier:</span>
+                    <span class="font-semibold">${userId || 'Authenticating...'}</span>
+                </div>
+
+                <form onsubmit="window.handleSaveProfile(event)" id="profile-form" class="space-y-10">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        ${InputField("Name", "profile-name", user.name)}
+                        ${InputField("Age", "profile-age", user.age, "number")}
+                        ${InputField("Height", "profile-height", user.height, "number", "cm")}
+                        ${InputField("Weight", "profile-weight", user.weight, "number", "kg")}
+                    </div>
+
+                    <div class="border-t border-slate-700 pt-8">
+                        ${GoalSelector(profileGoal)}
+                    </div>
+
+                    ${profileGoal !== 'maintenance' ? `
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                            ${InputField("Target Change", "profile-target-change", user.targetWeightChangeKg, "number", "kg")}
+                            ${InputField("Duration", "profile-duration", user.goalDurationMonths, "number", "months")}
+                        </div>
+                    ` : ''}
+                    
+                    <div class="flex flex-col items-center">
+                        ${IconButton(`
+                            <span class="w-5 h-5 mr-2" id="save-icon">${icons.CheckCircle}</span> 
+                            <span id="save-text">SAVE PROTOCOL</span>
+                        `, `window.handleSaveProfile(event)`, 'orange', !isAuthReady || !userId, 'submit')}
+                        <div id="profile-save-message" data-message="">${saveMessageHtml}</div>
+                    </div>
+                </form>
+            `, 'max-w-4xl mx-auto', 'border-orange-500/50');
+        };
+
+        const renderPlan = () => {
+            const user = userState;
+            const today = new Date();
+            const dayIndex = today.getDay() === 0 ? 6 : today.getDay() - 1; 
+            const dayNames = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+            const schedule = getDynamicSchedule(user.goal, user.streakDays);
+
+            const daysHtml = schedule.schedule.map((day, index) => {
+                const isCurrentDay = index === dayIndex;
+                const isCompleted = user.weeklyCompletion[index] === true;
+                
+                const baseGlassClasses = 'p-6 rounded-2xl transition-all duration-300 shadow-xl backdrop-blur-xl border-2 flex flex-col justify-between';
+
+                let dynamicClasses = '';
+                let titleColor = 'text-orange-400';
+                let iconColor = 'text-slate-500';
+                let listColor = 'text-slate-400';
+
+                if (isCurrentDay) {
+                    dynamicClasses = 'bg-slate-900/90 border-orange-500 ring-4 ring-orange-500/30 scale-[1.03] shadow-[0_0_25px_rgba(251,146,60,0.7)] z-10';
+                    titleColor = 'text-orange-300';
+                    iconColor = 'text-orange-400';
+                    listColor = 'text-slate-200';
+                } else if (isCompleted) {
+                    dynamicClasses = 'bg-slate-800/70 border-lime-500/50 hover:bg-slate-700/70 shadow-inner shadow-lime-950/20';
+                    titleColor = 'text-lime-400';
+                    iconColor = 'text-lime-400';
+                    listColor = 'text-lime-200';
+                } else {
+                    dynamicClasses = 'bg-slate-900/50 border-slate-800 hover:bg-slate-800/70 shadow-2xl shadow-slate-950/70';
+                    titleColor = 'text-white';
+                    iconColor = 'text-orange-500/50';
+                    listColor = 'text-slate-400';
+                }
+
+                const cardClasses = `${baseGlassClasses} ${dynamicClasses}`;
+
+                const exercisesHtml = day.exercises.map((ex) => `
+                    <li class="flex items-start text-sm font-mono">
+                        <span class="text-[8px] mr-2 mt-[6px] ${listColor}">&#9679;</span> <span class="${listColor}">${ex}</span>
+                    </li>
+                `).join('');
+
+                const button = isCompleted ? `
+                    <button 
+                        disabled
+                        class="w-full flex items-center justify-center px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-wide bg-lime-600/30 text-lime-400 border border-lime-600/50"
+                    >
+                        <span class="w-4 h-4 mr-1">${icons.Check}</span> PROTOCOL LOGGED
+                    </button>
+                ` : IconButton(`
+                    LOG COMPLETE
+                `, `window.handleCompleteDay(${index})`, 'small-lime', !isCurrentDay);
+
+
+                return `
+                    <div class="${cardClasses}">
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <h3 class="text-2xl font-black ${titleColor}">${day.day}</h3>
+                                <span class="w-6 h-6 ${iconColor}">${isCompleted ? icons.CheckCircle : icons.Clock}</span>
+                            </div>
+                            <p class="font-semibold text-base ${isCurrentDay ? 'text-white' : 'text-slate-300'}">${day.focus}</p>
+                            
+                            <ul class="list-none mt-4 space-y-2 text-sm">
+                                ${exercisesHtml}
+                            </ul>
+                        </div>
+
+                        <div class="mt-6">
+                            ${button}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="space-y-10 animate-fadeIn">
+                    ${GlassCard(`
+                        <h2 class="text-3xl font-extrabold text-white mb-2 uppercase tracking-wider flex items-center gap-3">
+                            <span class="w-8 h-8 text-orange-500">${icons.Dumbbell}</span>
+                            ${schedule.title}
+                        </h2>
+                        <p class="text-slate-400 mb-6">${schedule.description}</p>
+                        
+                        <div class="flex flex-wrap items-center justify-between bg-slate-800/70 p-4 rounded-xl border border-slate-700 shadow-inner shadow-slate-950/50">
+                            <div class="text-lg font-bold text-orange-400">
+                                ${schedule.currentWeek} | INTENSITY: <span class="text-lime-400">${schedule.progressionLevel + 1}</span>
+                            </div>
+                            <div class="text-sm font-mono text-slate-300">
+                                Base Goal: <span class="uppercase text-orange-400">${user.goal}</span>
+                            </div>
+                        </div>
+                    `, '', 'border-orange-500/70')}
+
+                    <!-- Daily Schedule Grid -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        ${daysHtml}
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderCoach = () => {
+            const user = userState;
+            
+            // Coach messages are stored temporarily on the DOM element for persistence during tab switches
+            const coachContainer = document.getElementById('coach-container');
+            let messages = [];
+            if (coachContainer && coachContainer.dataset.messages) {
+                messages = JSON.parse(coachContainer.dataset.messages);
+            } else {
+                // Initial message if not in DOM yet
+                messages = [{ id: 1, sender: 'bot', text: `Access granted, ${user.name || 'Athlete'}. I'm Coach Rex, your AI training matrix. Query your ${WORKOUT_PLANS[user.goal]?.title || 'fitness'} protocol.` }];
+            }
+
+            const isThinking = coachContainer ? coachContainer.dataset.thinking === 'true' : false;
+
+            const parseTextWithMarkdown = (text) => {
+                // Simple bold markdown **text** to <strong>
+                const parts = text.split(/(\*\*.*?\*\*)/g).map(part => {
+                    if (part.startsWith('**') && part.endsWith('**')) {
+                        return `<strong class="text-orange-300 font-extrabold">${part.slice(2, -2)}</strong>`;
+                    }
+                    return part;
+                }).join('');
+                return parts.replace(/\n/g, '<br/>');
+            };
+
+            const messagesHtml = messages.map(msg => `
+                <div class="flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}">
+                    <div class="max-w-[90%] md:max-w-[70%] px-5 py-3 rounded-xl text-sm transition-all duration-300 whitespace-pre-wrap ${
+                        msg.sender === 'user' 
+                        ? 'bg-orange-600 text-slate-950 rounded-br-none font-semibold shadow-xl shadow-orange-500/30' 
+                        : 'bg-slate-700 text-slate-100 rounded-tl-none border border-purple-500/30 font-mono shadow-xl shadow-purple-950/50'
+                    }">
+                        ${parseTextWithMarkdown(msg.text)}
+                    </div>
+                </div>
+            `).join('');
+            
+            const QUICK_ASK_BUTTONS = [
+                { text: "Today's Macros?", query: "What should my macro split be today?", icon: icons.Utensils },
+                { text: "Goal Pacing?", query: "Am I on track for my weight goal?", icon: icons.Target },
+                { text: "Sleep Advice", query: "Give me 3 tips for better sleep hygiene.", icon: icons.Clock },
+            ];
+
+            const quickAskButtonsHtml = QUICK_ASK_BUTTONS.map(item => `
+                <button
+                    onclick="window.handleQuickAsk('${item.query}')"
+                    ${isThinking ? 'disabled' : ''}
+                    class="flex items-center gap-1 px-3 py-2 text-xs font-semibold rounded-full bg-purple-600/30 border border-purple-600 text-purple-200 hover:bg-purple-600 hover:text-white transition-all duration-200 shadow-md whitespace-nowrap disabled:opacity-50"
+                >
+                    <span class="w-4 h-4">${item.icon}</span>
+                    ${item.text}
+                </button>
+            `).join('');
+
+            return GlassCard(`
+                <div id="coach-container" data-messages='${JSON.stringify(messages)}' data-thinking="${isThinking}" class="h-[calc(100vh-8rem)] flex flex-col !p-0 overflow-hidden">
+                    <!-- Header -->
+                    <div class="p-5 bg-slate-800 border-b-4 border-purple-600/50 flex items-center gap-4 shadow-xl shadow-slate-950/70">
+                        <div class="w-12 h-12 rounded-full bg-purple-600 flex items-center justify-center shadow-lg shadow-purple-500/50">
+                            <span class="text-white w-6 h-6">${icons.MessageSquare}</span>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold text-white uppercase tracking-widest">Coach Rex Protocol</h3>
+                            <p class="text-xs text-lime-400 flex items-center gap-1 font-mono">
+                                <span class="w-2 h-2 rounded-full bg-lime-400 ${isThinking ? 'animate-pulse' : ''}"></span> SYSTEM STATUS: ONLINE
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Messages Area -->
+                    <div id="coach-messages-area" class="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-950/80 border-b border-slate-800">
+                        ${messagesHtml}
+                        ${isThinking ? `
+                            <div class="flex justify-start">
+                                <div class="max-w-[70%] px-5 py-3 rounded-xl bg-slate-700 text-slate-400 rounded-tl-none border border-purple-500/30 font-mono text-sm">
+                                    <span class="animate-pulse">Analyzing protocol...</span>
+                                </div>
+                            </div>
+                        ` : ''}
+                        <div id="messages-end-ref"></div>
+                    </div>
+                    
+                    <!-- Quick-Ask Buttons -->
+                    <div class="p-4 bg-slate-800/70 border-t border-slate-700 flex flex-wrap justify-start gap-3">
+                        ${quickAskButtonsHtml}
+                    </div>
+
+                    <!-- Input Form -->
+                    <form onsubmit="window.handleSendCoach(event)" id="coach-form" class="p-4 bg-slate-800 border-t border-slate-700 flex gap-3">
+                        <input 
+                            type="text" 
+                            id="coach-input"
+                            placeholder="Input command..." 
+                            class="flex-1 bg-slate-900 border border-slate-700 rounded-full px-5 py-3 text-white placeholder-slate-600 focus:ring-2 focus:ring-purple-500 focus:outline-none transition-shadow shadow-inner shadow-slate-950/50"
+                            ${isThinking ? 'disabled' : ''}
+                        />
+                        <button 
+                            type="submit" 
+                            id="coach-send-btn"
+                            class="bg-purple-600 hover:bg-purple-500 text-white rounded-full p-3 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 shadow-lg shadow-purple-500/50"
+                            disabled
+                        >
+                            <span class="w-5 h-5">${icons.Send}</span>
+                        </button>
+                    </form>
+                </div>
+            `, 'h-full !p-0 overflow-hidden', 'border-purple-500/50');
+        };
+
+        const renderContent = (tab) => {
+            let content = '';
+            switch (tab) {
+                case 'dashboard': content = renderDashboard(); break;
+                case 'profile': content = renderProfile(); break;
+                case 'plan': content = renderPlan(); break;
+                case 'coach': content = renderCoach(); break;
+                default: content = renderDashboard(); break;
+            }
+
+            document.querySelector('main').innerHTML = content;
+            
+            // Special handling for Coach chat scroll and input listener
+            if (tab === 'coach') {
+                const messagesEndRef = document.getElementById('messages-end-ref');
+                messagesEndRef?.scrollIntoView({ behavior: "smooth" });
+
+                const inputEl = document.getElementById('coach-input');
+                const sendBtn = document.getElementById('coach-send-btn');
+                
+                // Add event listener to enable/disable button based on input
+                if (inputEl && sendBtn) {
+                    inputEl.addEventListener('input', () => {
+                        sendBtn.disabled = !inputEl.value.trim();
+                    });
+                    sendBtn.disabled = !inputEl.value.trim();
+                }
+            }
+        };
+
+        const renderApp = () => {
+            const appRoot = document.getElementById('app-root');
+            if (!isAuthReady) {
+                appRoot.innerHTML = `
+                    <div class="flex items-center justify-center h-screen bg-slate-950">
+                        <div class="text-white flex flex-col items-center">
+                            <svg class="animate-spin h-8 w-8 text-orange-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            <p class="text-lg text-slate-400 font-medium">Authenticating Protocol...</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Main structure rendering
+            appRoot.innerHTML = `
+                ${Navigation()}
+                <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+                    <!-- Content will be rendered here -->
+                </main>
+            `;
+            
+            // Render the content of the active tab
+            renderContent(activeTab);
+        };
+
+        // --- Global Handlers (exposed to window for onclick) ---
+
+        window.setActiveTab = (tab) => {
+            activeTab = tab;
+            // Close mobile menu when a tab is selected
+            if (mobileMenuOpen) {
+                setMobileMenu(false);
+            } else {
+                renderApp();
+            }
+        };
+        
+        window.setMobileMenu = (isOpen) => {
+            mobileMenuOpen = isOpen;
+            renderApp();
+        };
+
+        window.setGoal = (newGoal) => {
+            userState.goal = newGoal;
+            renderApp(); // Re-render profile page to update goal-specific inputs
+        };
+        
+        window.handleWaterIncrement = async () => {
+            if (!db || !userId) return;
+
+            const todayDate = getTodayDateString();
+            const streakRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'completion_data', 'streak_stats');
+            
+            let currentIntake = userState.dailyWaterIntake;
+            let intakeDate = userState.dailyWaterDate;
+            
+            // Check for new day and reset if needed
+            if (intakeDate !== todayDate) {
+                currentIntake = 0;
+            }
+            
+            // Calculate the next intake, capped at 3000 ML
+            const newIntake = Math.min(currentIntake + INCREMENT_ML, WATER_GOAL_ML);
+            
+            if (newIntake === currentIntake) {
+                console.log("Water intake goal already met.");
+                return;
+            }
+            
+            const newWaterData = {
+                dailyWaterIntake: newIntake,
+                dailyWaterDate: todayDate,
+            };
+
+            try {
+                await setDoc(streakRef, newWaterData, { merge: true });
+                // The onSnapshot listener will update userState and trigger renderApp
+            } catch (error) {
+                console.error("Error updating water intake:", error);
+            }
+        };
+
+        window.handleCompleteDay = async (dayIndexToComplete) => {
+            if (!db || !userId) return;
+
+            const todayDate = getTodayDateString();
+            const streakRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'completion_data', 'streak_stats');
+            
+            const todayIndex = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
+            const isCompletingToday = dayIndexToComplete === todayIndex;
+            const isAlreadyComplete = userState.weeklyCompletion[dayIndexToComplete] === true;
+
+            if (isAlreadyComplete) {
+                console.log(`Day ${dayIndexToComplete} already marked complete.`);
+                return;
+            }
+
+            let newStreakDays = userState.streakDays;
+            let newLastCompletionDate = userState.lastCompletionDate;
+            let newWeeklyCompletion = { ...userState.weeklyCompletion };
+            
+            if (isCompletingToday) {
+                const lastDate = userState.lastCompletionDate;
+                const diffDays = dateDifferenceInDays(lastDate, todayDate);
+                
+                if (lastDate === null || diffDays > 1) {
+                    newStreakDays = 1;
+                } else if (diffDays === 1) {
+                    newStreakDays += 1;
+                }
+                
+                newLastCompletionDate = todayDate;
+            }
+
+            newWeeklyCompletion[dayIndexToComplete] = true;
+            
+            const newStreakData = {
+                streakDays: newStreakDays,
+                lastCompletionDate: newLastCompletionDate, 
+                weeklyCompletion: newWeeklyCompletion,
+            };
+            
+            try {
+                await setDoc(streakRef, newStreakData, { merge: true });
+                // The onSnapshot listener will update userState and trigger renderApp
+            } catch (error) {
+                console.error("Error updating completion data:", error);
+            }
+        };
+
+        window.handleSaveProfile = async (e) => {
+            e.preventDefault();
+            
+            const saveIcon = document.getElementById('save-icon');
+            const saveText = document.getElementById('save-text');
+            const saveMessageEl = document.getElementById('profile-save-message');
+            
+            const startSaving = () => {
+                if (saveIcon && saveText) {
+                    saveIcon.innerHTML = `<svg class="animate-spin h-5 w-5 text-slate-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+                    saveText.textContent = 'SYNCHRONIZING DATA...';
+                }
+                saveMessageEl.dataset.message = '';
+                saveMessageEl.innerHTML = '';
+            };
+            
+            const stopSaving = (message, isError) => {
+                if (saveIcon && saveText) {
+                    saveIcon.innerHTML = icons.CheckCircle;
+                    saveText.textContent = 'SAVE PROTOCOL';
+                }
+                saveMessageEl.dataset.message = message;
+                saveMessageEl.innerHTML = `<p class="font-bold mt-4 text-sm ${isError ? 'text-red-400' : 'text-lime-400'}">${message}</p>`;
+                setTimeout(() => {
+                    saveMessageEl.dataset.message = '';
+                    saveMessageEl.innerHTML = '';
+                }, 3000);
+            };
+
+            if (!db || !userId) {
+                stopSaving("Error: Database connection not ready.", true);
+                return;
+            }
+            startSaving();
+
+            const profileRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'user_profile', 'stats');
+            
+            const name = document.getElementById('profile-name').value;
+            const height = document.getElementById('profile-height').value;
+            const weight = document.getElementById('profile-weight').value;
+            const age = document.getElementById('profile-age').value;
+            const targetWeightChangeKg = document.getElementById('profile-target-change')?.value || 0;
+            const goalDurationMonths = document.getElementById('profile-duration')?.value || 0;
+            
+            const profileData = {
+                name,
+                height: height ? parseFloat(height) : '',
+                weight: weight ? parseFloat(weight) : '',
+                age: age ? parseInt(age, 10) : '',
+                goal: userState.goal,
+                goalDurationMonths: goalDurationMonths ? parseInt(goalDurationMonths, 10) : 0,
+                targetWeightChangeKg: targetWeightChangeKg ? parseFloat(targetWeightChangeKg) : 0,
+            };
+
+            try {
+                await setDoc(profileRef, profileData, { merge: true });
+                stopSaving('Profile saved successfully! Data sync complete.', false);
+                // The onSnapshot listener updates userState
+            } catch (error) {
+                console.error("Error saving profile:", error);
+                stopSaving('CRITICAL ERROR: Failed to save profile data.', true);
+            }
+        };
+
+        let coachMessages = []; // Separate internal state for coach messages
+
+        window.handleSendCoach = (e) => {
+            e.preventDefault();
+            const inputEl = document.getElementById('coach-input');
+            const query = inputEl.value.trim();
+            if (!query) return;
+
+            const coachContainer = document.getElementById('coach-container');
+            coachMessages = JSON.parse(coachContainer.dataset.messages);
+            
+            const newMsg = { id: Date.now(), sender: 'user', text: query };
+            coachMessages.push(newMsg);
+            inputEl.value = '';
+            coachContainer.dataset.messages = JSON.stringify(coachMessages);
+            coachContainer.dataset.thinking = 'true';
+            renderContent('coach');
+
+            setTimeout(() => {
+                const response = getCoachResponse(newMsg.text, userState.goal); 
+                coachMessages.push({ id: Date.now() + 1, sender: 'bot', text: response });
+                coachContainer.dataset.messages = JSON.stringify(coachMessages);
+                coachContainer.dataset.thinking = 'false';
+                renderContent('coach');
+            }, 1000);
+        };
+        
+        window.handleQuickAsk = (query) => {
+             const coachContainer = document.getElementById('coach-container');
+             if (coachContainer.dataset.thinking === 'true') return;
+             
+             coachMessages = JSON.parse(coachContainer.dataset.messages);
+             
+             const newMsg = { id: Date.now(), sender: 'user', text: query };
+             coachMessages.push(newMsg);
+             coachContainer.dataset.messages = JSON.stringify(coachMessages);
+             coachContainer.dataset.thinking = 'true';
+             renderContent('coach');
+             
+             setTimeout(() => {
+                 const response = getCoachResponse(query, userState.goal);
+                 coachMessages.push({ id: Date.now() + 1, sender: 'bot', text: response });
+                 coachContainer.dataset.messages = JSON.stringify(coachMessages);
+                 coachContainer.dataset.thinking = 'false';
+                 renderContent('coach');
+             }, 1000);
+        };
+
+
+        // --- Firebase Core Logic ---
+
+        const setupDataListeners = () => {
+            if (!db || !userId || !isAuthReady) return;
+
+            // 1. Profile Data Listener
+            const profileRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'user_profile', 'stats');
+            onSnapshot(profileRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    userState = { 
+                        ...userState, 
+                        name: data.name || '',
+                        height: data.height || '', 
+                        weight: data.weight || '',
+                        age: data.age || '',
+                        goal: data.goal || 'maintenance',
+                        goalDurationMonths: data.goalDurationMonths || 0,
+                        targetWeightChangeKg: data.targetWeightChangeKg || 0,
+                    };
+                }
+                renderApp();
+            }, (error) => {
+                console.error("Error fetching Profile data:", error);
+            });
+
+            // 2. Streak/Completion Data Listener
+            const streakRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'completion_data', 'streak_stats');
+            onSnapshot(streakRef, (docSnap) => {
+                const today = getTodayDateString();
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    
+                    let intake = data.dailyWaterIntake || 0;
+                    let intakeDate = data.dailyWaterDate || null;
+                    
+                    // Daily Reset Logic for Water Intake
+                    if (intakeDate !== today) {
+                        if (intakeDate !== null) {
+                            intake = 0; // Reset for a new day
+                        }
+                    }
+
+                    userState = {
+                        ...userState,
+                        streakDays: data.streakDays || 0,
+                        lastCompletionDate: data.lastCompletionDate || null,
+                        weeklyCompletion: data.weeklyCompletion || {},
+                        dailyWaterIntake: intake, 
+                        dailyWaterDate: today,
+                    };
+                } else {
+                    // Initialize water intake date for new/empty doc
+                    userState = {
+                        ...userState,
+                        dailyWaterIntake: 0,
+                        dailyWaterDate: today,
+                    };
+                }
+                renderApp();
+            }, (error) => {
+                console.error("Error fetching Streak data:", error);
+            });
+        };
+
+        const initFirebaseAndAuth = async () => {
+            try {
+                app = initializeApp(FIREBASE_CONFIG);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                isAuthReady = true;
+                renderApp();
+                return;
+            }
+
+            // Set up Auth State Listener
+            onAuthStateChanged(auth, (currentUser) => {
+                if (currentUser) {
+                    userId = currentUser.uid;
+                } else {
+                    userId = null; 
+                }
+                isAuthReady = true;
+                renderApp();
+                setupDataListeners();
+            });
+
+            // Attempt Sign-In
+            try {
+                if (INITIAL_AUTH_TOKEN) {
+                    await signInWithCustomToken(auth, INITIAL_AUTH_TOKEN);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Authentication failed:", error);
+            }
+        };
+
+        // Start the application after the script loads
+        initFirebaseAndAuth();
+
+    </script>
+</body>
+</html>
