@@ -59,8 +59,7 @@
     <!-- Firebase SDK Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // ADDED: GoogleAuthProvider, signInWithPopup, linkWithPopup
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, linkWithPopup } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables available inside this module script
@@ -72,8 +71,6 @@
         let activeTab = 'dashboard';
         let mobileMenuOpen = false;
         let weightChartInstance = null; // Track chart instance to prevent canvas errors
-        let isAnonymousUser = false; // Track if the user is anonymous
-        let profileMessage = ''; // Message state for the profile save/login process
 
         // --- GLOBAL STATE MANAGEMENT ---
         // 1. User Profile and Metrics State (from Firestore)
@@ -288,7 +285,6 @@
             Clock: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
             Send: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`,
             Plus: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
-            Google: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="24px" height="24px"><path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.343c-1.77,2.833-5.597,6.38-11.343,6.38 c-6.702,0-12.128-5.836-12.128-13c0-7.164,5.426-13,12.128-13c3.16,0,5.992,1.386,8.239,3.587L38.257,8.28 C34.821,4.195,29.742,2,24,2C11.839,2,2,11.901,2,24s9.839,22,22,22c11.758,0,16.89-4.175,18.428-9.356 c0.871-2.903,1.354-6.427,1.354-10.644C44,22.684,43.834,21.365,43.611,20.083z"/><path fill="#FF3D00" d="M6.307,14.691L4.824,9.608C8.891,4.557,15.176,2,24,2c5.742,0,10.821,2.195,14.257,5.856 L30.939,12.26C28.692,10.059,25.86,8.673,22.7,8.673c-6.702,0-12.128,5.836-12.128,13C10.572,28.836,16,34.672,22.7,34.672 c3.011,0,5.452-1.077,7.206-2.946l0.292,0.281C26.586,34.505,24,34.885,24,34.885c-12.161,0-21.999-9.837-21.999-22 C2.001,13.811,5.204,13.256,6.307,14.691z"/><path fill="#4CAF50" d="M44,24c0-4.217-0.483-7.741-1.354-10.644c-1.538-5.181-6.669-9.356-18.428-9.356 c-4.735,0-9.283,1.401-13.041,3.844l4.286,3.429C20.108,12.44,22.7,11.2,25.7,11.2c5.688,0,10.301,4.721,10.301,10.5 c0,5.779-4.722,10.5-10.41,10.5c-2.31,0-4.516-0.893-6.26-2.483l-3.238,3.238C15.827,38.805,19.749,41,24,41 c4.793,0,9.07-1.428,12.57-4.14C39.696,33.565,42.499,30.347,43.834,26.793C44.704,24.871,44,24,44,24z"/><path fill="#1976D2" d="M10.572,21.673c0-5.279,4.613-10.5,10.41-10.5c2.934,0,5.556,1.077,7.632,3.016l4.267-3.413 C32.716,9.489,28.279,8,24,8c-8.824,0-15.109,2.557-19.176,7.608l1.483,5.083C6.307,21.603,9.51,21.047,10.572,21.673z"/></svg>`,
         };
 
         // --- Core UI Components (HTML Templates) ---
@@ -386,8 +382,6 @@
             } else if (color === 'small-lime') {
                 currentBaseClasses = "flex items-center justify-center px-4 py-2 rounded-lg font-bold transition-all duration-200 transform hover:scale-[1.05] disabled:opacity-50 uppercase tracking-wide shadow-md focus:outline-none focus:ring-2 ring-offset-1 ring-offset-slate-950 text-xs";
                 colorClasses = 'bg-lime-600 hover:bg-lime-500 text-slate-950 shadow-lime-500/30 ring-lime-500/50';
-            } else if (color === 'google') {
-                 colorClasses = 'bg-white hover:bg-slate-100 text-slate-950 shadow-slate-500/30 ring-slate-400/50';
             }
 
             return `
@@ -574,35 +568,16 @@
                 </div>
             `;
 
-            // Display message based on profileMessage state
-            const messageContent = profileMessage 
-                ? `<p class="font-bold mt-4 text-sm ${profileMessage.includes('Error') ? 'text-red-400' : 'text-lime-400'}">${profileMessage}</p>`
-                : '';
+            let saveMessageHtml = '';
+            const messageElement = document.getElementById('profile-save-message');
+            if (messageElement) {
+                const message = messageElement.dataset.message;
+                const isError = message.includes('ERROR');
+                if(message) {
+                     saveMessageHtml = `<p class="font-bold mt-4 text-sm ${isError ? 'text-red-400' : 'text-lime-400'}">${message}</p>`;
+                }
+            }
             
-            // Login/Upgrade Section
-            const authStatusSection = isAnonymousUser ? `
-                <div class="border-t border-slate-700 pt-8 mt-10">
-                    <h3 class="text-xl font-extrabold text-red-400 mb-4 uppercase tracking-wider flex items-center gap-3">
-                        <span class="w-6 h-6">${icons.X}</span>
-                        Upgrade Account Required
-                    </h3>
-                    <p class="text-sm text-slate-400 mb-6">Your current session is anonymous and data is temporary. Sign in with Google to secure your progress and sync across devices.</p>
-                    
-                    ${IconButton(`
-                        <span class="w-5 h-5 mr-2">${icons.Google}</span> SIGN IN WITH GOOGLE
-                    `, `window.handleGoogleSignIn()`, 'google', !isAuthReady || !userId)}
-                </div>
-            ` : `
-                <div class="border-t border-lime-700 pt-8 mt-10">
-                    <h3 class="text-xl font-extrabold text-lime-400 mb-4 uppercase tracking-wider flex items-center gap-3">
-                        <span class="w-6 h-6">${icons.CheckCircle}</span>
-                        Account Secured
-                    </h3>
-                    <p class="text-sm text-slate-400">Your profile is linked to a permanent account and backed up securely.</p>
-                </div>
-            `;
-
-
             return GlassCard(`
                 <h2 class="text-3xl font-extrabold text-white mb-8 uppercase tracking-wider border-b border-slate-700 pb-4 flex items-center gap-3">
                     <span class="w-8 h-8 text-orange-500">${icons.User}</span>
@@ -638,13 +613,9 @@
                             <span class="w-5 h-5 mr-2" id="save-icon">${icons.CheckCircle}</span> 
                             <span id="save-text">SAVE PROTOCOL</span>
                         `, `window.handleSaveProfile(event)`, 'orange', !isAuthReady || !userId, 'submit')}
-                        <div id="profile-save-message">${messageContent}</div>
+                        <div id="profile-save-message" data-message="">${saveMessageHtml}</div>
                     </div>
                 </form>
-
-                <!-- NEW LOGIN/UPGRADE SECTION -->
-                ${authStatusSection}
-                
             `, 'max-w-4xl mx-auto', 'border-orange-500/50');
         };
 
@@ -973,16 +944,6 @@
         };
 
         // --- Global Handlers (exposed to window for onclick) ---
-        
-        const setProfileMessage = (message) => {
-            profileMessage = message;
-            renderApp();
-            // Clear message after 3 seconds
-            setTimeout(() => {
-                profileMessage = '';
-                renderApp();
-            }, 3000);
-        }
 
         window.setActiveTab = (tab) => {
             activeTab = tab;
@@ -1095,13 +1056,15 @@
             
             const saveIcon = document.getElementById('save-icon');
             const saveText = document.getElementById('save-text');
+            const saveMessageEl = document.getElementById('profile-save-message');
             
             const startSaving = () => {
                 if (saveIcon && saveText) {
                     saveIcon.innerHTML = `<svg class="animate-spin h-5 w-5 text-slate-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
                     saveText.textContent = 'SYNCHRONIZING DATA...';
                 }
-                setProfileMessage(''); // Clear previous message
+                saveMessageEl.dataset.message = '';
+                saveMessageEl.innerHTML = '';
             };
             
             const stopSaving = (message, isError) => {
@@ -1109,7 +1072,12 @@
                     saveIcon.innerHTML = icons.CheckCircle;
                     saveText.textContent = 'SAVE PROTOCOL';
                 }
-                setProfileMessage(message);
+                saveMessageEl.dataset.message = message;
+                saveMessageEl.innerHTML = `<p class="font-bold mt-4 text-sm ${isError ? 'text-red-400' : 'text-lime-400'}">${message}</p>`;
+                setTimeout(() => {
+                    saveMessageEl.dataset.message = '';
+                    saveMessageEl.innerHTML = '';
+                }, 3000);
             };
 
             if (!db || !userId) {
@@ -1170,42 +1138,6 @@
             } catch (error) {
                 console.error("Error saving profile:", error);
                 stopSaving('CRITICAL ERROR: Failed to save profile data.', true);
-            }
-        };
-
-        window.handleGoogleSignIn = async () => {
-            if (!auth || !auth.currentUser) return;
-            
-            setProfileMessage('Initiating Google sign-in protocol...');
-
-            const provider = new GoogleAuthProvider();
-
-            try {
-                if (auth.currentUser.isAnonymous) {
-                    // Upgrade Anonymous User
-                    const result = await linkWithPopup(auth.currentUser, provider);
-                    // Force the state update listener to fire
-                    if (result && result.user) {
-                        isAnonymousUser = false; 
-                        setProfileMessage('Account successfully linked! Data secured.');
-                    }
-                } else {
-                    // Standard Sign In/Sign Up
-                    const result = await signInWithPopup(auth, provider);
-                    // The onAuthStateChanged listener handles the rest
-                    if (result && result.user) {
-                        setProfileMessage('Sign-in complete. Welcome back!');
-                    }
-                }
-            } catch (error) {
-                console.error("Google Sign-In Failed:", error);
-                let errorMessage = 'Google Sign-In Failed: Protocol error.';
-                if (error.code === 'auth/popup-closed-by-user') {
-                    errorMessage = 'Sign-in cancelled by user.';
-                } else if (error.code === 'auth/credential-already-in-use') {
-                    errorMessage = 'Error: That Google account is already linked to another profile.';
-                }
-                setProfileMessage(`ERROR: ${errorMessage}`);
             }
         };
 
@@ -1359,11 +1291,8 @@
             onAuthStateChanged(auth, (currentUser) => {
                 if (currentUser) {
                     userId = currentUser.uid;
-                    // Check if user is anonymous
-                    isAnonymousUser = currentUser.isAnonymous; 
                 } else {
                     userId = null; 
-                    isAnonymousUser = false;
                 }
                 isAuthReady = true;
                 renderApp();
