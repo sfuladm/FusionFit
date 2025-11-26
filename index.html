@@ -6,6 +6,8 @@
     <title>Fusion-Fit: Premium Protocol Interface</title>
     <!-- Load Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* Load Inter Font */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
@@ -68,8 +70,10 @@
         let isAuthReady = false;
         let activeTab = 'dashboard';
         let mobileMenuOpen = false;
+        let weightChartInstance = null; // Track chart instance to prevent canvas errors
 
-        // Global state object mirroring the React component state
+        // --- GLOBAL STATE MANAGEMENT ---
+        // 1. User Profile and Metrics State (from Firestore)
         let userState = {
             name: '',
             height: '',
@@ -78,11 +82,18 @@
             goal: 'maintenance',
             goalDurationMonths: 0,
             targetWeightChangeKg: 0,
+            weightHistory: [], 
             streakDays: 0,
             lastCompletionDate: null, 
             weeklyCompletion: {},
             dailyWaterIntake: 0,
             dailyWaterDate: null,
+        };
+        
+        // 2. Coach Rex Chat State (Temporary, non-Firestore state for chat persistence across re-renders)
+        let coachState = {
+            messages: [],
+            isThinking: false
         };
 
         // --- Global Constants and Utilities ---
@@ -220,7 +231,7 @@
         const getCoachResponse = (query, goal) => {
             const lowerQuery = query.toLowerCase();
 
-            if (lowerQuery.includes('pace') || lowerQuery.includes('track')) {
+            if (lowerQuery.includes('pace') || lowerQuery.includes('track') || lowerQuery.includes('goal pacing')) {
                 let response;
                 if (goal === 'loss') {
                     response = "STATUS: MONITORING. For **Weight Loss**, the target pace is typically $0.5$ - $1.0$ kg/week. Ensure your calorie deficit is consistent and prioritize protein intake to preserve muscle mass. Review your goal in the Profile tab.";
@@ -232,7 +243,7 @@
                 return `// PROTOCOL REX // ${response}`;
             }
 
-            if (lowerQuery.includes('macro')) {
+            if (lowerQuery.includes('macro') || lowerQuery.includes('macro split')) {
                 let response;
                 if (goal === 'loss') {
                     response = "MACRO INSTRUCTION: Prioritize protein for satiety and muscle preservation. Aim for a split near **$40\%$ Protein / $30\%$ Fat / $30\%$ Carbs**. Adjust fat and carbs based on energy levels.";
@@ -244,11 +255,11 @@
                 return "// NUTRITION MATRIX // " + response;
             }
 
-            if (lowerQuery.includes('sleep') || lowerQuery.includes('recovery')) {
+            if (lowerQuery.includes('sleep') || lowerQuery.includes('recovery') || lowerQuery.includes('sleep hygiene')) {
                 return "// RECOVERY PROTOCOL // Initiate Sleep Hygiene Check: 1) **Maintain a consistent sleep schedule**. 2) **Dim ambient light** $60$ minutes before bed. 3) **Ensure your room temperature is cool**. Prioritize $7$ - $9$ hours.";
             }
 
-            if (lowerQuery.includes('today')) {
+            if (lowerQuery.includes('today') || lowerQuery.includes('workout plan')) {
                 return "// PROTOCOL READY // Consult the 'Plan' tab for your **complete scheduled workout**. Ensure you hit your $3000$ml hydration target and maintain your streak. Execute with maximum efficiency.";
             }
 
@@ -334,7 +345,7 @@
                             <!-- Mobile Menu Button -->
                             <button
                                 class="sm:hidden text-orange-500 p-3 rounded-xl hover:bg-slate-800 transition"
-                                onclick="window.setMobileMenu(!mobileMenuOpen)"
+                                onclick="window.setMobileMenu(${!mobileMenuOpen})"
                             >
                                 <span class="w-7 h-7">${mobileMenuOpen ? icons.X : icons.Menu}</span>
                             </button>
@@ -389,7 +400,7 @@
             const sizeClasses = 'w-14 h-14 text-lg';
             const colorClasses = 'bg-sky-600 hover:bg-sky-500 text-slate-950 shadow-2xl shadow-sky-500/50 ring-4 ring-sky-500/50';
 
-            const baseClasses = `flex items-center justify-center rounded-full font-extrabold transition-all duration-300 transform hover:scale-[1.1] disabled:opacity-50 focus:outline-none ring-offset-2 ring-offset-slate-950 ${sizeClasses}`;
+            const baseClasses = `flex items-center justify-center rounded-full font-extrabold transition-all duration-300 transform hover:scale-110 disabled:opacity-50 focus:outline-none ring-offset-2 ring-offset-slate-950 ${sizeClasses}`;
 
             return `
                 <button
@@ -413,14 +424,35 @@
                 ? `Maintain your consistency. Streak at ${user.streakDays} days.` 
                 : "Initialize your first data cycle by completing a workout.";
             
+            // Helper for standard data pills
             const DataPill = (label, value, iconKey, colorClass, highlight, bmiStatus) => `
-                <div class="p-5 rounded-2xl border-b-4 border-l-2 ${highlight} bg-slate-800/80 shadow-inner shadow-slate-950/50">
+                <div class="p-5 rounded-2xl border-b-4 border-l-2 ${highlight} bg-slate-800/80 shadow-inner shadow-slate-950/50 flex flex-col justify-between h-full overflow-hidden">
                     <div class="flex items-center justify-between mb-1">
                         <p class="text-xs text-slate-400 uppercase font-medium tracking-widest">${label}</p>
                         <span class="w-5 h-5 ${colorClass}">${icons[iconKey]}</span>
                     </div>
-                    <span class="text-4xl font-extrabold mt-1 block ${colorClass}">${value}</span>
-                    ${bmiStatus ? `<span class="text-sm mt-1 block ${bmiColor} font-semibold">${bmiStatus}</span>` : ''}
+                    <div>
+                        <span class="text-4xl font-extrabold mt-1 block ${colorClass} break-all">${value}</span>
+                        ${bmiStatus ? `<span class="text-sm mt-1 block ${bmiColor} font-semibold break-words">${bmiStatus}</span>` : ''}
+                    </div>
+                </div>
+            `;
+
+            // New Chart Card Component (Integrated)
+            const ChartCard = () => `
+                <div class="col-span-2 sm:col-span-1 p-5 rounded-2xl border-b-4 border-l-2 border-sky-500/50 bg-slate-800/80 shadow-inner shadow-slate-950/50 relative overflow-hidden">
+                    <div class="flex items-center justify-between mb-2 relative z-10">
+                        <p class="text-xs text-slate-400 uppercase font-medium tracking-widest">Mass Vector</p>
+                        <span class="w-5 h-5 text-sky-400">${icons.TrendingUp}</span>
+                    </div>
+                    <div class="flex items-end gap-2 relative z-10 mb-2">
+                        <span class="text-4xl font-extrabold text-sky-400">${user.weight || 'N/A'}</span>
+                        <span class="text-sm text-slate-500 font-mono mb-1">KG</span>
+                    </div>
+                    <!-- Canvas Container -->
+                    <div class="h-16 w-full mt-2">
+                        <canvas id="weightChart"></canvas>
+                    </div>
                 </div>
             `;
             
@@ -429,89 +461,66 @@
                 for (let i = 1; i <= 3; i++) {
                     const isFilled = i <= segments;
                     segmentsHtml += `
-                        <div
-                            class="flex-1 h-5 rounded-lg transition-all duration-700 shadow-inner border border-slate-600 ${
-                                isFilled 
-                                    ? 'bg-sky-500 shadow-sky-950' 
-                                    : 'bg-slate-700 shadow-slate-950/50'
-                            }"
-                        ></div>
-                    `;
+                        <div class="flex-1 h-5 rounded-lg transition-all duration-700 shadow-inner border border-slate-600 ${
+                            isFilled ? 'bg-sky-500 shadow-sky-950' : 'bg-slate-700 shadow-slate-950/50'
+                        }"></div>`;
                 }
                 return `<div class="flex space-x-2 w-full">${segmentsHtml}</div>`;
             };
 
-            const content = `
+            return `
                 <div class="space-y-12 animate-fadeIn">
                     <!-- Hero Section -->
                     ${GlassCard(`
                         <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center">
-                            <div>
-                                <h2 class="text-4xl sm:text-5xl font-extrabold text-white mb-2">
+                            <div class="mb-4 lg:mb-0 max-w-full">
+                                <h2 class="text-4xl sm:text-5xl font-extrabold text-white mb-2 break-words">
                                     PROTOCOL ONLINE, <span class="text-orange-500">${user.name || 'Athlete'}</span>
                                 </h2>
-                                <p class="text-lg text-slate-300 font-light mb-8">
-                                    ${streakMessage} <span class="text-lime-400 ml-1 font-mono tracking-wider">[${WORKOUT_PLANS[user.goal]?.title || 'N/A'}]</span>
+                                <p class="text-lg text-slate-300 font-light mb-8 break-words">
+                                    ${streakMessage} <span class="text-lime-400 ml-1 font-mono tracking-wider break-all">[${WORKOUT_PLANS[user.goal]?.title || 'N/A'}]</span>
                                 </p>
                             </div>
-                            
-                            ${IconButton(`
-                                <span class="w-5 h-5 mr-2">${icons.Dumbbell}</span> EXECUTE WORKOUT
-                            `, `window.setActiveTab('plan')`, 'orange')}
+                            ${IconButton(`<span class="w-5 h-5 mr-2">${icons.Dumbbell}</span> EXECUTE WORKOUT`, `window.setActiveTab('plan')`, 'orange')}
                         </div>
                     `, '!p-12 border-b-4 border-r-2 border-orange-500/70')}
 
-                    <!-- Metrics Grid -->
-                    <div class="grid grid-cols-2 gap-6">
+                    <!-- Metrics Grid with Chart -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
                         ${DataPill("Active Streak", user.streakDays, "Award", "text-orange-400", "border-orange-500/50")}
-                        ${DataPill("Current Mass", `${user.weight || 'N/A'} kg`, "TrendingUp", "text-sky-400", "border-sky-500/50")}
+                        ${ChartCard()} <!-- Chart.js Sparkline -->
                         ${DataPill("Primary Goal", WORKOUT_PLANS[user.goal]?.title.split(' ')[0] || 'N/A', "Target", "text-purple-400", "border-purple-500/50")}
                         ${DataPill("BMI Index", bmi, "Activity", bmiColor, "border-slate-500/50", bmiStatus)}
                     </div>
                     
                     <!-- Action Cards -->
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <!-- Hydration Card - Redesigned with 3-segment bar -->
                         ${GlassCard(`
                             <div>
                                 <h3 class="text-3xl font-extrabold text-white mb-2 uppercase tracking-wider">Hydration Matrix</h3>
                                 <p class="text-sm text-slate-400 mb-6">Target: ${WATER_GOAL_ML} ML (3 x ${INCREMENT_ML}ML Segments)</p>
-                                
                                 <div class="flex items-center justify-between mb-6">
                                     <p class="text-5xl font-extrabold text-sky-300 font-mono">${user.dailyWaterIntake} <span class="text-lg text-slate-400">ML</span></p>
-                                    
-                                    ${CircleIconButton(
-                                        icons.Droplet, 
-                                        'window.handleWaterIncrement()', 
-                                        completedSegments >= 3
-                                    )}
+                                    ${CircleIconButton(icons.Droplet, 'window.handleWaterIncrement()', completedSegments >= 3)}
                                 </div>
                             </div>
-                            
-                            <!-- Segmented Progress Bar -->
                             ${SegmentedProgressBar(completedSegments)}
-                            
-                            <!-- Status Message -->
                             <p class="text-sm font-semibold uppercase tracking-widest mt-6 ${completedSegments >= 3 ? 'text-lime-400' : 'text-sky-400'}">
                                 ${completedSegments >= 3 ? 'Goal Achieved' : `Log ${INCREMENT_ML} ML Increment (${completedSegments}/3)`}
                             </p>
                         `, 'flex flex-col justify-between', 'border-sky-500/50')}
 
-                        <!-- AI Assist/Coach Card -->
                         ${GlassCard(`
                             <div>
                                 <span class="w-9 h-9 text-purple-400 mb-4 inline-block">${icons.MessageSquare}</span>
                                 <h3 class="text-3xl font-extrabold text-white mb-2 uppercase tracking-wider">Coach Rex AI</h3>
                                 <p class="text-purple-300 mb-6">Access real-time protocol adjustments and personalized intelligence.</p>
                             </div>
-                            ${IconButton(`
-                                <span class="w-5 h-5 mr-2">${icons.MessageSquare}</span> ACTIVATE ASSISTANT
-                            `, `window.setActiveTab('coach')`, 'purple')}
+                            ${IconButton(`<span class="w-5 h-5 mr-2">${icons.MessageSquare}</span> ACTIVATE ASSISTANT`, `window.setActiveTab('coach')`, 'purple')}
                         `, 'flex flex-col justify-between', 'border-purple-500/50')}
                     </div>
                 </div>
             `;
-            return content;
         };
 
         const renderProfile = () => {
@@ -539,19 +548,22 @@
                 <div class="flex flex-col space-y-3">
                     <label class="text-sm font-bold text-slate-300 uppercase tracking-widest border-l-4 border-orange-500 pl-3">Primary Goal Protocol</label>
                     <div class="grid grid-cols-3 gap-4">
-                        ${['loss', 'maintenance', 'gain'].map(g => `
+                        ${['loss', 'maintenance', 'gain'].map(g => {
+                            // Logic to replace 'maintenance' display text with 'MAINTAIN'
+                            const displayText = g === 'maintenance' ? 'MAINTAIN' : g.toUpperCase();
+                            return `
                             <button
                                 type="button"
                                 onclick="window.setGoal('${g}')"
-                                class="p-4 rounded-xl font-bold uppercase transition-all duration-200 text-sm shadow-lg ${
+                                class="p-3 rounded-xl font-bold uppercase transition-all duration-200 text-xs shadow-lg ${
                                     currentGoal === g
                                         ? 'bg-orange-600 text-slate-950 ring-2 ring-orange-500/50 shadow-orange-500/50'
                                         : 'bg-slate-800 text-slate-300 hover:bg-slate-700/80 border border-slate-700'
                                 }"
                             >
-                                ${g.toUpperCase()}
+                                ${displayText}
                             </button>
-                        `).join('')}
+                        `}).join('')}
                     </div>
                 </div>
             `;
@@ -645,7 +657,7 @@
                 const cardClasses = `${baseGlassClasses} ${dynamicClasses}`;
 
                 const exercisesHtml = day.exercises.map((ex) => `
-                    <li class="flex items-start text-sm font-mono">
+                    <li class="flex items-start text-sm font-mono break-words">
                         <span class="text-[8px] mr-2 mt-[6px] ${listColor}">&#9679;</span> <span class="${listColor}">${ex}</span>
                     </li>
                 `).join('');
@@ -669,7 +681,7 @@
                                 <h3 class="text-2xl font-black ${titleColor}">${day.day}</h3>
                                 <span class="w-6 h-6 ${iconColor}">${isCompleted ? icons.CheckCircle : icons.Clock}</span>
                             </div>
-                            <p class="font-semibold text-base ${isCurrentDay ? 'text-white' : 'text-slate-300'}">${day.focus}</p>
+                            <p class="font-semibold text-base ${isCurrentDay ? 'text-white' : 'text-slate-300'} break-words">${day.focus}</p>
                             
                             <ul class="list-none mt-4 space-y-2 text-sm">
                                 ${exercisesHtml}
@@ -690,10 +702,10 @@
                             <span class="w-8 h-8 text-orange-500">${icons.Dumbbell}</span>
                             ${schedule.title}
                         </h2>
-                        <p class="text-slate-400 mb-6">${schedule.description}</p>
+                        <p class="text-slate-400 mb-6 break-words">${schedule.description}</p>
                         
                         <div class="flex flex-wrap items-center justify-between bg-slate-800/70 p-4 rounded-xl border border-slate-700 shadow-inner shadow-slate-950/50">
-                            <div class="text-lg font-bold text-orange-400">
+                            <div class="text-lg font-bold text-orange-400 break-words">
                                 ${schedule.currentWeek} | INTENSITY: <span class="text-lime-400">${schedule.progressionLevel + 1}</span>
                             </div>
                             <div class="text-sm font-mono text-slate-300">
@@ -711,19 +723,9 @@
         };
 
         const renderCoach = () => {
+            // REX FIX: Read state directly from global coachState
             const user = userState;
-            
-            // Coach messages are stored temporarily on the DOM element for persistence during tab switches
-            const coachContainer = document.getElementById('coach-container');
-            let messages = [];
-            if (coachContainer && coachContainer.dataset.messages) {
-                messages = JSON.parse(coachContainer.dataset.messages);
-            } else {
-                // Initial message if not in DOM yet
-                messages = [{ id: 1, sender: 'bot', text: `Access granted, ${user.name || 'Athlete'}. I'm Coach Rex, your AI training matrix. Query your ${WORKOUT_PLANS[user.goal]?.title || 'fitness'} protocol.` }];
-            }
-
-            const isThinking = coachContainer ? coachContainer.dataset.thinking === 'true' : false;
+            const { messages, isThinking } = coachState; 
 
             const parseTextWithMarkdown = (text) => {
                 // Simple bold markdown **text** to <strong>
@@ -733,12 +735,13 @@
                     }
                     return part;
                 }).join('');
+                // Use break-words in addition to whitespace-pre-wrap to handle extremely long URLs or tokens inside responses
                 return parts.replace(/\n/g, '<br/>');
             };
 
             const messagesHtml = messages.map(msg => `
                 <div class="flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}">
-                    <div class="max-w-[90%] md:max-w-[70%] px-5 py-3 rounded-xl text-sm transition-all duration-300 whitespace-pre-wrap ${
+                    <div class="max-w-[90%] md:max-w-[70%] px-5 py-3 rounded-xl text-sm transition-all duration-300 whitespace-pre-wrap break-words ${
                         msg.sender === 'user' 
                         ? 'bg-orange-600 text-slate-950 rounded-br-none font-semibold shadow-xl shadow-orange-500/30' 
                         : 'bg-slate-700 text-slate-100 rounded-tl-none border border-purple-500/30 font-mono shadow-xl shadow-purple-950/50'
@@ -749,9 +752,10 @@
             `).join('');
             
             const QUICK_ASK_BUTTONS = [
-                { text: "Today's Macros?", query: "What should my macro split be today?", icon: icons.Utensils },
-                { text: "Goal Pacing?", query: "Am I on track for my weight goal?", icon: icons.Target },
-                { text: "Sleep Advice", query: "Give me 3 tips for better sleep hygiene.", icon: icons.Clock },
+                { text: "Today's Macros?", query: "What should my macro split be today?" },
+                { text: "Goal Pacing?", query: "Am I on track for my weight goal?" },
+                { text: "Sleep Advice", query: "Give me 3 tips for better sleep hygiene." },
+                { text: "Today's Plan", query: "What is my workout plan for today?" },
             ];
 
             const quickAskButtonsHtml = QUICK_ASK_BUTTONS.map(item => `
@@ -760,13 +764,12 @@
                     ${isThinking ? 'disabled' : ''}
                     class="flex items-center gap-1 px-3 py-2 text-xs font-semibold rounded-full bg-purple-600/30 border border-purple-600 text-purple-200 hover:bg-purple-600 hover:text-white transition-all duration-200 shadow-md whitespace-nowrap disabled:opacity-50"
                 >
-                    <span class="w-4 h-4">${item.icon}</span>
                     ${item.text}
                 </button>
             `).join('');
 
             return GlassCard(`
-                <div id="coach-container" data-messages='${JSON.stringify(messages)}' data-thinking="${isThinking}" class="h-[calc(100vh-8rem)] flex flex-col !p-0 overflow-hidden">
+                <div id="coach-container" class="h-[calc(100vh-8rem)] flex flex-col !p-0 overflow-hidden">
                     <!-- Header -->
                     <div class="p-5 bg-slate-800 border-b-4 border-purple-600/50 flex items-center gap-4 shadow-xl shadow-slate-950/70">
                         <div class="w-12 h-12 rounded-full bg-purple-600 flex items-center justify-center shadow-lg shadow-purple-500/50">
@@ -793,8 +796,8 @@
                         <div id="messages-end-ref"></div>
                     </div>
                     
-                    <!-- Quick-Ask Buttons -->
-                    <div class="p-4 bg-slate-800/70 border-t border-slate-700 flex flex-wrap justify-start gap-3">
+                    <!-- Quick-Ask Buttons (DISABLED BY isThinking) -->
+                    <div class="p-4 bg-slate-800/70 border-t border-slate-700 flex flex-wrap justify-start gap-3 overflow-x-auto">
                         ${quickAskButtonsHtml}
                     </div>
 
@@ -812,12 +815,67 @@
                             id="coach-send-btn"
                             class="bg-purple-600 hover:bg-purple-500 text-white rounded-full p-3 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 shadow-lg shadow-purple-500/50"
                             disabled
+                            ${isThinking ? 'disabled' : ''}
                         >
                             <span class="w-5 h-5">${icons.Send}</span>
                         </button>
                     </form>
                 </div>
             `, 'h-full !p-0 overflow-hidden', 'border-purple-500/50');
+        };
+        
+        // --- Chart.js Rendering Logic ---
+        
+        const renderWeightChart = () => {
+            const ctx = document.getElementById('weightChart');
+            if (!ctx) return;
+
+            // Destroy previous instance to prevent "canvas reuse" errors
+            if (weightChartInstance) {
+                weightChartInstance.destroy();
+            }
+
+            // Default history to today if empty, to ensure chart has at least one point
+            const history = userState.weightHistory && userState.weightHistory.length > 0 
+                ? userState.weightHistory 
+                : [{ date: getTodayDateString(), weight: parseFloat(userState.weight) || 0 }];
+
+            // Sort by date just in case
+            history.sort((a, b) => new Date(a.date) - new Date(b.date));
+            
+            // Take only the last 7 entries for the sparkline visual
+            const recentHistory = history.slice(-7);
+
+            const dataPoints = recentHistory.map(h => h.weight);
+            const labels = recentHistory.map(h => h.date.slice(5)); // Show MM-DD
+
+            weightChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: dataPoints,
+                        borderColor: '#38bdf8', // sky-400
+                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        borderWidth: 3,
+                        pointBackgroundColor: '#0f172a', // slate-900
+                        pointBorderColor: '#38bdf8',
+                        pointRadius: 4,
+                        tension: 0.4, // Smooth curves
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: true, intersect: false, mode: 'index' } },
+                    scales: {
+                        x: { display: false }, // Hide X axis
+                        // Hide Y axis but ensure line doesn't hit top/bottom edges
+                        y: { display: false, min: Math.min(...dataPoints) - 2, max: Math.max(...dataPoints) + 2 } 
+                    }
+                }
+            });
         };
 
         const renderContent = (tab) => {
@@ -832,6 +890,12 @@
 
             document.querySelector('main').innerHTML = content;
             
+            // Chart.js Trigger: Only when dashboard is active
+            if (tab === 'dashboard') {
+                // Timeout needed to wait for innerHTML paint
+                setTimeout(() => renderWeightChart(), 50);
+            }
+            
             // Special handling for Coach chat scroll and input listener
             if (tab === 'coach') {
                 const messagesEndRef = document.getElementById('messages-end-ref');
@@ -840,12 +904,15 @@
                 const inputEl = document.getElementById('coach-input');
                 const sendBtn = document.getElementById('coach-send-btn');
                 
-                // Add event listener to enable/disable button based on input
+                // REX FIX: Re-attach listener and set initial button state based on input value and thinking state
                 if (inputEl && sendBtn) {
-                    inputEl.addEventListener('input', () => {
-                        sendBtn.disabled = !inputEl.value.trim();
-                    });
-                    sendBtn.disabled = !inputEl.value.trim();
+                    const updateSendButtonState = () => {
+                        // Button is disabled if Coach is thinking OR input is empty
+                        sendBtn.disabled = coachState.isThinking || !inputEl.value.trim();
+                    };
+                    
+                    inputEl.addEventListener('input', updateSendButtonState);
+                    updateSendButtonState(); // Set initial state
                 }
             }
         };
@@ -908,7 +975,7 @@
             let intakeDate = userState.dailyWaterDate;
             
             // Check for new day and reset if needed
-            if (intakeDate !== todayDate) {
+            if (intakeDate !== today) {
                 currentIntake = 0;
             }
             
@@ -956,6 +1023,9 @@
                 const lastDate = userState.lastCompletionDate;
                 const diffDays = dateDifferenceInDays(lastDate, todayDate);
                 
+                // Streak logic: 
+                // 1. If never completed OR completion was > 1 day ago -> start a new streak (1 day)
+                // 2. If completion was exactly 1 day ago (yesterday) -> increment streak
                 if (lastDate === null || diffDays > 1) {
                     newStreakDays = 1;
                 } else if (diffDays === 1) {
@@ -1025,14 +1095,40 @@
             const targetWeightChangeKg = document.getElementById('profile-target-change')?.value || 0;
             const goalDurationMonths = document.getElementById('profile-duration')?.value || 0;
             
+            // --- UPDATED LOGIC FOR CHART HISTORY ---
+            const currentWeight = weight ? parseFloat(weight) : 0;
+            const todayDate = getTodayDateString();
+
+            // Get existing history or init empty
+            let existingHistory = userState.weightHistory || [];
+
+            // Logic: If weight changed OR it's a new day with no entry, add to history.
+            const lastEntry = existingHistory[existingHistory.length - 1];
+            if (!lastEntry || (lastEntry.date !== todayDate && lastEntry.weight !== currentWeight)) {
+                // If the dates are different, push new
+                if (lastEntry && lastEntry.date !== todayDate) {
+                     existingHistory.push({ date: todayDate, weight: currentWeight });
+                } 
+                // If it is the first entry
+                else if (!lastEntry) {
+                     existingHistory.push({ date: todayDate, weight: currentWeight });
+                }
+            } 
+            
+            // If it IS today, update the weight entry for today to correct typos
+            if (lastEntry && lastEntry.date === todayDate) {
+                lastEntry.weight = currentWeight;
+            }
+            
             const profileData = {
                 name,
                 height: height ? parseFloat(height) : '',
-                weight: weight ? parseFloat(weight) : '',
+                weight: currentWeight,
                 age: age ? parseInt(age, 10) : '',
                 goal: userState.goal,
                 goalDurationMonths: goalDurationMonths ? parseInt(goalDurationMonths, 10) : 0,
                 targetWeightChangeKg: targetWeightChangeKg ? parseFloat(targetWeightChangeKg) : 0,
+                weightHistory: existingHistory // Save the array to Firestore
             };
 
             try {
@@ -1045,52 +1141,57 @@
             }
         };
 
-        let coachMessages = []; // Separate internal state for coach messages
 
         window.handleSendCoach = (e) => {
             e.preventDefault();
             const inputEl = document.getElementById('coach-input');
             const query = inputEl.value.trim();
-            if (!query) return;
+            if (!query || coachState.isThinking) return;
 
-            const coachContainer = document.getElementById('coach-container');
-            coachMessages = JSON.parse(coachContainer.dataset.messages);
+            // REX FIX: Use global coachState
             
+            // 1. Add user message
             const newMsg = { id: Date.now(), sender: 'user', text: query };
-            coachMessages.push(newMsg);
+            coachState.messages.push(newMsg);
+            
+            // Clear input and set thinking state
             inputEl.value = '';
-            coachContainer.dataset.messages = JSON.stringify(coachMessages);
-            coachContainer.dataset.thinking = 'true';
-            renderContent('coach');
+            coachState.isThinking = true;
+            renderApp(); // Re-render to show user message and thinking state
 
+            // 2. Simulate bot response
             setTimeout(() => {
                 const response = getCoachResponse(newMsg.text, userState.goal); 
-                coachMessages.push({ id: Date.now() + 1, sender: 'bot', text: response });
-                coachContainer.dataset.messages = JSON.stringify(coachMessages);
-                coachContainer.dataset.thinking = 'false';
-                renderContent('coach');
+                coachState.messages.push({ id: Date.now() + 1, sender: 'bot', text: response });
+                
+                // 3. Update state and re-render
+                coachState.isThinking = false;
+                renderApp();
             }, 1000);
         };
         
         window.handleQuickAsk = (query) => {
-             const coachContainer = document.getElementById('coach-container');
-             if (coachContainer.dataset.thinking === 'true') return;
+            if (coachState.isThinking) return;
              
-             coachMessages = JSON.parse(coachContainer.dataset.messages);
-             
-             const newMsg = { id: Date.now(), sender: 'user', text: query };
-             coachMessages.push(newMsg);
-             coachContainer.dataset.messages = JSON.stringify(coachMessages);
-             coachContainer.dataset.thinking = 'true';
-             renderContent('coach');
-             
-             setTimeout(() => {
-                 const response = getCoachResponse(query, userState.goal);
-                 coachMessages.push({ id: Date.now() + 1, sender: 'bot', text: response });
-                 coachContainer.dataset.messages = JSON.stringify(coachMessages);
-                 coachContainer.dataset.thinking = 'false';
-                 renderContent('coach');
-             }, 1000);
+            // REX FIX: Use global coachState
+            
+            // 1. Add user quick ask message to global state
+            const newMsg = { id: Date.now(), sender: 'user', text: query };
+            coachState.messages.push(newMsg);
+            
+            // 2. Set thinking state and re-render
+            coachState.isThinking = true;
+            renderApp();
+            
+            // 3. Simulate bot response
+            setTimeout(() => {
+                const response = getCoachResponse(query, userState.goal);
+                coachState.messages.push({ id: Date.now() + 1, sender: 'bot', text: response });
+                
+                // 4. Update state and re-render
+                coachState.isThinking = false;
+                renderApp();
+            }, 1000);
         };
 
 
@@ -1102,6 +1203,9 @@
             // 1. Profile Data Listener
             const profileRef = doc(db, 'artifacts', APP_ID, 'users', userId, 'user_profile', 'stats');
             onSnapshot(profileRef, (docSnap) => {
+                const prevName = userState.name;
+                const prevGoal = userState.goal;
+                
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     userState = { 
@@ -1113,8 +1217,16 @@
                         goal: data.goal || 'maintenance',
                         goalDurationMonths: data.goalDurationMonths || 0,
                         targetWeightChangeKg: data.targetWeightChangeKg || 0,
+                        weightHistory: data.weightHistory || [], 
                     };
                 }
+                
+                // REX FIX: Update initial chat message if name or goal changed and chat is empty
+                if (coachState.messages.length <= 1 && (prevName !== userState.name || prevGoal !== userState.goal)) {
+                    const initialMessage = `Access granted, ${userState.name || 'Athlete'}. I'm Coach Rex, your AI training matrix. Query your ${WORKOUT_PLANS[userState.goal]?.title || 'fitness'} protocol.`;
+                    coachState.messages = [{ id: 1, sender: 'bot', text: initialMessage }];
+                }
+                
                 renderApp();
             }, (error) => {
                 console.error("Error fetching Profile data:", error);
@@ -1170,6 +1282,10 @@
                 renderApp();
                 return;
             }
+            
+            // REX FIX: Set up initial chat message immediately for a quick visual feedback
+            const initialMessage = `Access granted, Athlete. I'm Coach Rex, your AI training matrix. Query your fitness protocol.`;
+            coachState.messages = [{ id: 1, sender: 'bot', text: initialMessage }];
 
             // Set up Auth State Listener
             onAuthStateChanged(auth, (currentUser) => {
@@ -1201,3 +1317,4 @@
     </script>
 </body>
 </html>
+
